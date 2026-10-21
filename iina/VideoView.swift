@@ -13,6 +13,9 @@ class VideoView: NSView {
 
   weak var player: PlayerCore!
   var link: CVDisplayLink?
+  private var layerConfigured = false
+  private var fullscreenDrawableSize: CGSize?
+  private var pendingContentsScale: CGFloat?
 
   lazy var videoLayer: ViewLayer = {
     let layer = ViewLayer(self)
@@ -63,10 +66,18 @@ class VideoView: NSView {
     super.init(frame: frame)
 
     // set up layer
-    layer = videoLayer
+    let backingLayer = CALayer()
+    backingLayer.backgroundColor = NSColor.black.cgColor
+    backingLayer.masksToBounds = true
+    backingLayer.contentsFormat = videoLayer.contentsFormat
+    backingLayer.addSublayer(videoLayer)
+    videoLayer.autoresizingMask = []
+    layer = backingLayer
     videoLayer.colorspace = VideoView.SRGB
     videoLayer.contentsScale = NSScreen.main!.backingScaleFactor
     wantsLayer = true
+    layerConfigured = true
+    updateVideoLayerGeometry()
 
     // other settings
     autoresizingMask = [.width, .height]
@@ -104,6 +115,53 @@ class VideoView: NSView {
 
   override func draw(_ dirtyRect: NSRect) {
     // do nothing
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    updateVideoLayerGeometry()
+  }
+
+  /// Reuse the current drawable while AppKit animates the window. Resizing the OpenGL
+  /// surface on every animation tick can block IOSurface registration in WindowServer.
+  func beginFullscreenTransition() {
+    let size = videoLayer.bounds.size
+    guard size.width > 0, size.height > 0 else { return }
+    fullscreenDrawableSize = size
+  }
+
+  func endFullscreenTransition() {
+    fullscreenDrawableSize = nil
+    if let scale = pendingContentsScale {
+      videoLayer.contentsScale = scale
+      pendingContentsScale = nil
+    }
+    updateVideoLayerGeometry()
+    if !isUninited { videoLayer.update(force: true) }
+  }
+
+  func updateBackingScaleFactor(_ scale: CGFloat) {
+    if fullscreenDrawableSize != nil {
+      pendingContentsScale = scale
+    } else {
+      videoLayer.contentsScale = scale
+    }
+  }
+
+  private func updateVideoLayerGeometry() {
+    guard layerConfigured else { return }
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    videoLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+    if let size = fullscreenDrawableSize {
+      let scale = min(bounds.width / size.width, bounds.height / size.height)
+      videoLayer.bounds = CGRect(origin: .zero, size: size)
+      videoLayer.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+    } else {
+      videoLayer.setAffineTransform(.identity)
+      videoLayer.bounds = CGRect(origin: .zero, size: bounds.size)
+    }
+    CATransaction.commit()
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -471,6 +529,11 @@ class VideoView: NSView {
 
 extension VideoView {
   func refreshEdrMode() {
+    defer {
+      if #available(macOS 14.0, *) {
+        layer?.wantsExtendedDynamicRangeContent = videoLayer.wantsExtendedDynamicRangeContent
+      }
+    }
     guard player.mainWindow.loaded, player.info.state.loaded, let displayId = currentDisplay else { return }
     if let screen = self.window?.screen {
       NSScreen.logEDR("Refreshing HDR for \(player.subsystem.rawValue) on display\(displayId)",

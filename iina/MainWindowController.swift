@@ -1298,7 +1298,9 @@ class MainWindowController: PlayerWindowController {
     guard !interactiveMode.isActive else { return }
 
     refreshSeekTimeAndThumbnail(from: event)
-    if isMouseInWindow {
+    // Mouse events can arrive at the display refresh rate. Only start a fade when the UI
+    // actually needs to become visible; restarting it on every event stalls its completion.
+    if isMouseInWindow && animationState != .shown && animationState != .willShow {
       showUI()
     }
     // check whether mouse is in osc
@@ -1462,8 +1464,8 @@ class MainWindowController: PlayerWindowController {
 
   func window(_ window: NSWindow, startCustomAnimationToEnterFullScreenOn screen: NSScreen, withDuration duration: TimeInterval) {
     NSAnimationContext.runAnimationGroup({ context in
-      context.duration = duration
-      window.animator().setFrame(screen.frame, display: true, animate: !Preference.bool(for: PK.disableAnimations))
+      context.duration = Preference.bool(for: PK.disableAnimations) ? 0 : duration
+      window.animator().setFrame(screen.frame, display: true)
     }, completionHandler: nil)
   }
 
@@ -1474,8 +1476,8 @@ class MainWindowController: PlayerWindowController {
     let priorWindowedFrame = fsState.priorWindowedFrame!
 
     NSAnimationContext.runAnimationGroup({ context in
-      context.duration = duration
-      window.animator().setFrame(priorWindowedFrame, display: true, animate: !Preference.bool(for: PK.disableAnimations))
+      context.duration = Preference.bool(for: PK.disableAnimations) ? 0 : duration
+      window.animator().setFrame(priorWindowedFrame, display: true)
     }, completionHandler: nil)
 
     NSMenu.setMenuBarVisible(true)
@@ -1495,6 +1497,7 @@ class MainWindowController: PlayerWindowController {
   ///     [willEnterFullScreenNotification](https://developer.apple.com/documentation/appkit/nswindow/willenterfullscreennotification).
   func windowWillEnterFullScreen(_ notification: Notification) {
     log("Entering full screen mode")
+    videoView.beginFullscreenTransition()
     // When playback is paused the display link is stopped in order to avoid wasting energy on
     // needless processing. It must be running while transitioning to full screen mode.
     videoView.displayActive()
@@ -1532,6 +1535,8 @@ class MainWindowController: PlayerWindowController {
   func windowDidEnterFullScreen(_ notification: Notification) {
     log("Entered full screen mode")
     fsState.finishAnimating()
+    videoView.endFullscreenTransition()
+    videoView.videoLayer.inLiveResize = false
 
     titleTextField?.alphaValue = 1
     for view in standardWindowButtons {
@@ -1598,6 +1603,8 @@ class MainWindowController: PlayerWindowController {
     // will correctly set the state to windowed.
     fsState = .animating(toFullscreen: false, legacy: legacy, priorWindowedFrame: priorWindowedFrame)
     fsState.finishAnimating()
+    videoView.endFullscreenTransition()
+    videoView.videoLayer.inLiveResize = false
 
     titleBarView.update(hasOSC: oscPosition == .top, inFullScreen: false)
     setWindowToolbar()
@@ -1627,6 +1634,7 @@ class MainWindowController: PlayerWindowController {
   ///     [willExitFullScreenNotification](https://developer.apple.com/documentation/appkit/nswindow/willexitfullscreennotification).
   func windowWillExitFullScreen(_ notification: Notification) {
     log("Exiting full screen mode")
+    videoView.beginFullscreenTransition()
     // When playback is paused the display link is stopped in order to avoid wasting energy on
     // needless processing. It must be running while transitioning from full screen mode.
     videoView.displayActive()
@@ -1662,6 +1670,8 @@ class MainWindowController: PlayerWindowController {
   /// - Parameter notification: A notification named
   ///     [didExitFullScreenNotification](https://developer.apple.com/documentation/appkit/nswindow/didexitfullscreennotification).
   func windowDidExitFullScreen(_ notification: Notification) {
+    videoView.endFullscreenTransition()
+    videoView.videoLayer.inLiveResize = false
     log("Exited full screen mode")
 
     if fsState.isFullscreen {
@@ -1749,6 +1759,8 @@ class MainWindowController: PlayerWindowController {
     // will correctly set the state to  full screen mode.
     fsState = .animating(toFullscreen: true, legacy: legacy, priorWindowedFrame: priorWindowedFrame)
     fsState.finishAnimating()
+    videoView.endFullscreenTransition()
+    videoView.videoLayer.inLiveResize = false
 
     titleBarView.update(hasOSC: oscPosition == .top, inFullScreen: true)
     setWindowToolbar()
@@ -1980,10 +1992,13 @@ class MainWindowController: PlayerWindowController {
 
   // resize framebuffer in videoView after resizing.
   func windowDidEndLiveResize(_ notification: Notification) {
+    // AppKit can end a live resize before the surrounding full screen animation finishes.
+    // Keep background drawing enabled until the full screen completion (or failure) callback.
+    if case .animating = fsState { return }
+    videoView.videoLayer.inLiveResize = false
     // Must not access mpv while it is asynchronously processing stop and quit commands.
     // See comments in windowWillExitFullScreen for details.
     guard player.info.state.active else { return }
-    videoView.videoLayer.inLiveResize = false
     updateWindowParametersForMPV()
     liveText.requestAnalysis()
   }
@@ -1991,7 +2006,7 @@ class MainWindowController: PlayerWindowController {
   func windowDidChangeBackingProperties(_ notification: Notification) {
     if let oldScale = (notification.userInfo?[NSWindow.oldScaleFactorUserInfoKey] as? NSNumber)?.doubleValue,
       oldScale != Double(window!.backingScaleFactor) {
-      videoView.videoLayer.contentsScale = window!.backingScaleFactor
+      videoView.updateBackingScaleFactor(window!.backingScaleFactor)
     }
   }
 
@@ -2118,6 +2133,7 @@ class MainWindowController: PlayerWindowController {
   func showUI() {
     if player.disableUI { return }
     guard !liveText.isActive, !interactiveMode.isActive else { return }
+    guard animationState != .willShow else { return }
     animationState = .willShow
     fadeableViews.forEach { (v) in
       v.isHidden = false
@@ -2145,8 +2161,11 @@ class MainWindowController: PlayerWindowController {
   // MARK: - UI: Show / Hide Timer
 
   func updateTimer() {
-    destroyTimer()
-    createTimer()
+    if let timer = hideControlTimer, timer.isValid {
+      timer.fireDate = Date(timeIntervalSinceNow: TimeInterval(Preference.float(for: .controlBarAutoHideTimeout)))
+    } else {
+      createTimer()
+    }
   }
 
   private func destroyTimer() {

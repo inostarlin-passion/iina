@@ -30,6 +30,31 @@ By submitting a pull request,
   - `project.pbxproj` — may change if signed with a different developer account. Changes from adding/removing files are fine.
   - `xib` files — discard changes you didn't make.
 
+## Tests
+
+After downloading the dependencies, run the macOS application-hosted regression tests:
+
+```sh
+./other/test_fullscreen.sh
+```
+
+These tests require a logged-in graphical macOS session. The calling terminal/application needs
+Screen Recording and event-posting permissions. The script starts a separate ScreenCaptureKit probe
+because the Xcode test host has its own permissions. Missing permissions or a missing probe fail
+the visual test instead of silently skipping it. The probe briefly moves the system cursor and restores
+its original position when finished.
+
+The suite covers renderer lock contention, bounded redraw scheduling, fullscreen completion and
+failure callbacks, mouse event bursts, and audio/video synchronization. A 60 fps test clip with a chroma
+marker lets the probe find the video during the fullscreen animation. It measures frame holds using
+WindowServer display timestamps and observes the cursor's actual pixels, comparing its cadence with
+a static reference scene on the same display. This catches stalls that mpv's drop counter and direct
+calls to `mouseMoved` cannot detect. The capture itself is calibrated; it is not a measurement of the
+panel's physical scanout.
+
+Raw frame measurements and phase timestamps are retained as JSON attachments in the Xcode test
+result. For a named result bundle, pass `-resultBundlePath` and a new output path to the script.
+
 ## Localizations
 
 We use [Crowdin](https://crowdin.com/project/iina) for localization.

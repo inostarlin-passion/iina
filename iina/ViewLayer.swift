@@ -69,6 +69,9 @@ class ViewLayer: CAOpenGLLayer {
   private weak var videoView: VideoView!
 
   private let mpvGLQueue = DispatchQueue(label: "com.colliderli.iina.mpvgl", qos: .userInteractive)
+  private let updateLock = NSLock()
+  private var updateScheduled = false
+  private var pendingForceDraw = false
 
   private var bufferDepth: GLint = 8
 
@@ -80,16 +83,13 @@ class ViewLayer: CAOpenGLLayer {
 
   private var fbo: GLint = 1
 
-  /// Lock used to allow the main thread priority access to `displayLock`.
-  private var mainThreadPriorityLock = MainThreadPriorityLock()
-
   /// When `true` the frame needs to be rendered.
   @Atomic private var needsFlip = false
 
   /// When `true` drawing will proceed even if mpv indicates nothing needs to be done.
   @Atomic private var forceDraw = false
 
-  /// Indicates whether the view is being rendered as part of a live resizing operation.
+  /// Indicates whether the view is being rendered during live resizing or a full screen transition.
   ///
   /// This flag is used to manage setting of the
   /// [isAsynchronous](https://developer.apple.com/documentation/quartzcore/caopengllayer/isasynchronous)
@@ -169,7 +169,9 @@ class ViewLayer: CAOpenGLLayer {
       if !inLiveResize {
         isAsynchronous = false
       }
-      return forceDraw || videoView.player.mpv.shouldRenderUpdateFrame()
+      // Advanced control requires servicing updates even when a draw is forced.
+      let hasFrame = videoView.player.mpv.shouldRenderUpdateFrame()
+      return forceDraw || hasFrame
     }
   }
 
@@ -263,30 +265,30 @@ class ViewLayer: CAOpenGLLayer {
   ///     something other than the main thread, IINA will crash with a SIGABRT reporting "an implicit transaction wasn't created on a
   ///     main thread". See issue [#5038](https://github.com/iina/iina/issues/5038).
   override func display() {
+    // Full screen animation and mouse-driven UI transactions can request a display on the main
+    // thread. Do not wait there for a video render (including mpv's target-time wait) to release
+    // displayLock or the GL context. The asynchronous layer / render queue will service the draw.
+    if Thread.isMainThread {
+      update(force: true)
+      return
+    }
 
-    // May need to block other threads to allow the main thread to lock displayLock.
-    mainThreadPriorityLock.beforeLocking()
     displayLock.lock()
     defer { displayLock.unlock() }
-    mainThreadPriorityLock.afterLocked()
 
     let isUpdate = needsFlip
 
-    if Thread.isMainThread {
-      super.display()
-    } else {
-      // When not on the main thread use an explicit transaction.
-      CATransaction.begin()
-      super.display()
-      CATransaction.commit()
-    }
+    CATransaction.begin()
+    super.display()
+    CATransaction.commit()
 
     // The call to commit will not render the explicit transaction if it is nested in an implicit
     // transaction. This can happen when drawing is being forced after a change to the view such as
     // resizing. Must call flush to ensure any implicit transaction is flushed.
     CATransaction.flush()
 
-    guard isUpdate && needsFlip else { return }
+    // Core Animation can defer an asynchronous resize draw; leave its pending frame intact.
+    guard isUpdate && needsFlip && !inLiveResize else { return }
 
     // Must lock the OpenGL context before calling mpv render methods. The OpenGL context must
     // always be locked before locking the isUninited lock to avoid deadlocks.
@@ -313,7 +315,20 @@ class ViewLayer: CAOpenGLLayer {
   }
 
   func update(force: Bool = false) {
+    updateLock.lock()
+    pendingForceDraw = pendingForceDraw || force
+    guard !updateScheduled else {
+      updateLock.unlock()
+      return
+    }
+    updateScheduled = true
+    updateLock.unlock()
     mpvGLQueue.async { [self] in
+      updateLock.lock()
+      let force = pendingForceDraw
+      pendingForceDraw = false
+      updateScheduled = false
+      updateLock.unlock()
       if force { forceDraw = true }
       needsFlip = true
       display()
@@ -540,49 +555,5 @@ class ViewLayer: CAOpenGLLayer {
 
   func ignoreGLError() {
     glGetError()
-  }
-}
-
-// MARK: - Main Thread Priority
-
-/// Lock used to give the main thread priority access to another lock.
-///
-/// Testing revealed that the main thread encounters lock starvation while trying to acquire `displayLock` when the `mpvGLQueue`
-/// thread is constantly locking and unlocking the lock during playback. This sometimes results in a severe hang causing the spinning
-/// beach ball of death to be displayed. This lock uses a
-/// [NSCondition](https://developer.apple.com/documentation/foundation/nscondition) to block other threads
-/// when the main thread needs to lock a lock, giving the main thread a chance to acquire the lock.
-private class MainThreadPriorityLock {
-
-  private let lock = NSCondition()
-
-  /// `True` when the main thread is waiting to lock a lock; `false` otherwise.
-  private var needsLock = false
-
-  /// All threads call this before attempting to lock a lock the main thread has trouble acquiring.
-  ///
-  /// When called by the main thread this function will record that the main thread is waiting for a lock. When called by other threads
-  /// this function will block the thread if the main thread is waiting, allowing it to proceed once the main thread has locked the lock.
-  func beforeLocking() {
-    lock.lock()
-    defer { lock.unlock() }
-    guard Thread.isMainThread else {
-      while needsLock { lock.wait() }
-      return
-    }
-    needsLock = true
-  }
-
-  /// All threads call this after locking a lock the main thread has trouble acquiring.
-  ///
-  /// When called by the main thread this function will record that the main thread has the lock and will allow any blocked threads to
-  /// proceed. When called by other threads this function does nothing. This avoids the caller only calling this when running on the
-  /// main thread.
-  func afterLocked() {
-    guard Thread.isMainThread else { return }
-    lock.lock()
-    defer { lock.unlock() }
-    needsLock = false
-    lock.broadcast()
   }
 }

@@ -306,6 +306,10 @@ class MPVController: NSObject {
     // Create a new mpv instance and an associated client API handle to control the mpv instance.
     mpv = mpv_create()
 
+    // Core Animation shares the render context. Waiting for a playback deadline while holding
+    // that context stalls its compositor. Let mpv schedule frames at their target time instead.
+    chkErr(setOptionString(MPVOption.VideoSync.videoTimingOffset, "0", level: .verbose))
+
     // User default settings
 
     if Preference.bool(for: .enableInitialVolume) {
