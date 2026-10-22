@@ -21,6 +21,9 @@ final class FullscreenPerformanceTests: XCTestCase {
                   "disableAnimations", "pauseWhenInactive"] {
         arguments[key] = false
       }
+      if !(ProcessInfo.processInfo.environment["IINA_CURSOR_REPRO_FILE"] ?? "").isEmpty {
+        arguments["enableThumbnailPreview"] = UserDefaults.standard.bool(forKey: "enableThumbnailPreview")
+      }
       arguments["enableControlBarAutoHide"] = true
       UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
       let player = CountingPlayerCore()
@@ -121,6 +124,98 @@ final class FullscreenPerformanceTests: XCTestCase {
     controller.showUI()
     XCTAssertEqual(player.uiRefreshCount, 1)
     XCTAssertTrue(controller.animationState == .willShow || controller.animationState == .shown)
+  }
+
+  func testFullscreenSliderHoverReusesRotatedThumbnail() {
+    let info = player.info
+    let previousDuration = info.videoDuration
+    let previousWidth = info.displayWidth
+    let previousHeight = info.displayHeight
+    let previousThumbnails = info.thumbnails
+    let previousReady = info.thumbnailsReady
+    let previousRotation = controller.rotation
+    defer {
+      info.videoDuration = previousDuration
+      info.displayWidth = previousWidth
+      info.displayHeight = previousHeight
+      info.thumbnails = previousThumbnails
+      info.thumbnailsReady = previousReady
+      controller.rotation = previousRotation
+      controller.thumbnailPeekView.imageView.image = nil
+    }
+    info.videoDuration = VideoTime(120)
+    info.displayWidth = 320
+    info.displayHeight = 180
+    let thumbnail = FFThumbnail()
+    thumbnail.realTime = 0
+    thumbnail.image = NSImage(size: NSSize(width: 320, height: 180), flipped: false) { rect in
+      NSColor.systemBlue.setFill()
+      rect.fill()
+      return true
+    }
+    info.thumbnails = [thumbnail]
+    info.thumbnailsReady = true
+    controller.rotation = 90
+    controller.fsState = .fullscreen(legacy: false, priorWindowedFrame: controller.window!.frame)
+    controller.showUI()
+    controller.window!.contentView!.layoutSubtreeIfNeeded()
+    let slider = controller.playSlider!
+    let point = slider.convert(NSPoint(x: slider.bounds.midX, y: slider.bounds.midY), to: nil)
+    let event = NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
+                                  windowNumber: controller.window!.windowNumber, context: nil,
+                                  eventNumber: 0, clickCount: 0, pressure: 0)!
+    controller.mouseMoved(with: event)
+    controller.flushCursorPreview()
+    let first = controller.thumbnailPeekView.imageView.image
+    XCTAssertNotNil(first)
+    for _ in 0..<240 {
+      controller.mouseMoved(with: event)
+      controller.flushCursorPreview()
+    }
+    XCTAssertTrue(controller.thumbnailPeekView.imageView.image === first,
+                  "Moving within the same thumbnail interval must not rasterize another rotated image per event")
+    controller.rotation = 180
+    controller.mouseMoved(with: event)
+    controller.flushCursorPreview()
+    XCTAssertFalse(controller.thumbnailPeekView.imageView.image === first,
+                   "Changing rotation must invalidate the cached preview")
+    let rotated = controller.thumbnailPeekView.imageView.image
+    thumbnail.image = NSImage(size: NSSize(width: 320, height: 180))
+    controller.mouseMoved(with: event)
+    controller.flushCursorPreview()
+    XCTAssertFalse(controller.thumbnailPeekView.imageView.image === rotated,
+                   "A different source thumbnail must replace the preview")
+  }
+
+  func testFullscreenPreviewCoalescesMotionAndAppliesLatestPosition() throws {
+    guard #available(macOS 14.0, *), (controller.window!.screen?.maximumFramesPerSecond ?? 60) > 60 else {
+      throw XCTSkip("View-bound high-refresh cursor updates require macOS 14 and a high-refresh display")
+    }
+    let info = player.info
+    let duration = info.videoDuration
+    defer { info.videoDuration = duration }
+    info.videoDuration = VideoTime(1095.842540)
+    controller.fsState = .fullscreen(legacy: false, priorWindowedFrame: controller.window!.frame)
+    controller.window!.contentView!.layoutSubtreeIfNeeded()
+    func motion(_ fraction: CGFloat) -> NSEvent {
+      let slider = controller.playSlider!
+      let point = slider.convert(NSPoint(x: 3 + (slider.bounds.width - 6) * fraction,
+                                          y: slider.bounds.midY), to: nil)
+      return NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
+                                windowNumber: controller.window!.windowNumber, context: nil,
+                                eventNumber: 0, clickCount: 0, pressure: 0)!
+    }
+    controller.mouseMoved(with: motion(0.2))
+    controller.flushCursorPreview()
+    let initialText = controller.timePreviewView.textField.stringValue
+    for _ in 0..<240 { controller.mouseMoved(with: motion(0.8)) }
+    XCTAssertEqual(controller.timePreviewView.textField.stringValue, initialText,
+                   "Polling-rate bursts must not repeatedly invalidate preview text and glass layout between display ticks")
+    controller.flushCursorPreview()
+    XCTAssertEqual(controller.timePreviewView.textField.stringValue,
+                   (info.videoDuration! * 0.8).stringRepresentation,
+                   "The next display tick must apply the latest position, rather than replaying stale events")
+    controller.videoView.stopCursorRefresh()
   }
 
   func testLiveResizeEndingDoesNotEndFullscreenRenderingProtection() {
@@ -306,6 +401,143 @@ final class FullscreenPerformanceTests: XCTestCase {
   }
 
   @available(macOS 12.3, *)
+  func testCursorMeasurementRejectsMissingTail() {
+    let samples = (0..<360).map { index in
+      CompositedFrameRecorder.Sample(time: Double(index) / 120, level: 100,
+                                     cursorX: index < 160 ? index : nil)
+    }
+    let holds = CompositedFrameRecorder.cursorChangeIntervals(samples, through: 3)
+    XCTAssertGreaterThan(holds.max() ?? 0, 1,
+                         "Losing the cursor for the rest of a motion phase must not pass its cadence test")
+  }
+
+  @available(macOS 12.3, *)
+  func testCursorMeasurementRejectsTruncatedCapture() {
+    let samples = (0..<160).map { index in
+      CompositedFrameRecorder.Sample(time: Double(index) / 120, level: 100, cursorX: index)
+    }
+    let holds = CompositedFrameRecorder.cursorChangeIntervals(samples, through: 3)
+    XCTAssertGreaterThan(holds.max() ?? 0, 1,
+                         "The end of the requested phase, rather than the last received frame, bounds measurement")
+  }
+
+  @available(macOS 12.3, *)
+  func testFullscreenCursorEventLatencyWithoutScreenRecording() async throws {
+    let probe = try CompositorProbeClient()
+    let player = PlayerCore()
+    player.label = "cursor-without-recording"
+    player.startMPV()
+    let controller = player.mainWindow!
+    let window = controller.window!
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".y4m")
+    var samples: [(time: Double, delay: Double)] = []
+    let monitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { event in
+      if event.cgEvent?.getIntegerValueField(.eventSourceUserData) == 0x49494e41 {
+        let now = ProcessInfo.processInfo.systemUptime
+        samples.append((now, now - event.timestamp))
+      }
+      return event
+    }!
+    addTeardownBlock { @MainActor in
+      NSEvent.removeMonitor(monitor)
+      try? await probe.stop()
+      if window.styleMask.contains(.fullScreen) {
+        window.toggleFullScreen(nil)
+        try await self.waitUntil {
+          if case .windowed = controller.fsState { return true }
+          return false
+        }
+      }
+      player.stop()
+      try await self.waitUntil { player.info.state == .idle }
+      player.shutdown()
+      try await self.waitUntil { player.info.state == .shutDown }
+      window.orderOut(nil)
+      try? FileManager.default.removeItem(at: url)
+    }
+    var clip = Data("YUV4MPEG2 W640 H360 F24:1 Ip A1:1 C420jpeg\n".utf8)
+    for frame in 0..<240 {
+      clip.append(Data("FRAME\n".utf8))
+      clip.append(Data(repeating: UInt8(80 + (frame % 24) * 4), count: 640 * 360))
+      clip.append(Data(repeating: 128, count: 640 * 360 / 2))
+    }
+    let reproductionFile = ProcessInfo.processInfo.environment["IINA_CURSOR_REPRO_FILE"]
+    let playbackURL: URL
+    if let reproductionFile, !reproductionFile.isEmpty {
+      playbackURL = URL(fileURLWithPath: reproductionFile)
+      XCTAssertTrue(FileManager.default.isReadableFile(atPath: reproductionFile), "The requested reproduction file must exist")
+    } else {
+      try clip.write(to: url)
+      playbackURL = url
+    }
+    player.mpv.setString("loop-file", "inf")
+    player.openURL(playbackURL, shouldAutoLoad: false)
+    try await waitUntil { player.info.state == .playing }
+    window.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    window.toggleFullScreen(nil)
+    try await waitUntil {
+      if case .fullscreen = controller.fsState { return true }
+      return false
+    }
+    let screen = window.screen!
+    if reproductionFile?.isEmpty == false {
+      XCTAssertGreaterThanOrEqual(screen.maximumFramesPerSecond, 120, "The supplied reproduction requires a 120 Hz display")
+    }
+    let displayBounds = CGDisplayBounds(screen.displayId!)
+    try await probe.start(displayID: screen.displayId!, capturesFrames: false)
+    // Let ProMotion and cursor auto-hide settle before measuring, without an active capture stream.
+    try await Task.sleep(nanoseconds: 4_000_000_000)
+    let videoMotion = try await probe.moveCursor(bounds: displayBounds, duration: 10)
+    if reproductionFile?.isEmpty == false {
+      try await waitUntil { player.info.thumbnailsReady }
+      XCTAssertFalse(player.info.thumbnails.isEmpty, "Real-media hover must exercise thumbnails from the supplied file")
+    } else {
+      let thumbnail = FFThumbnail()
+      thumbnail.realTime = 0
+      thumbnail.image = NSImage(size: NSSize(width: 320, height: 180), flipped: false) { rect in
+        NSColor.systemBlue.setFill()
+        rect.fill()
+        return true
+      }
+      player.info.thumbnails = [thumbnail]
+      player.info.thumbnailsReady = true
+    }
+    let previewRotation = (reproductionFile?.isEmpty == false) ? 0 : 90
+    player.setVideoRotate(previewRotation)
+    try await waitUntil { controller.rotation == previewRotation }
+    controller.showUI()
+    window.contentView!.layoutSubtreeIfNeeded()
+    let sliderInWindow = controller.playSlider.convert(controller.playSlider.bounds, to: nil)
+    let sliderOnScreen = window.convertToScreen(sliderInWindow)
+    let sliderBounds = CGRect(x: displayBounds.minX + sliderOnScreen.minX - screen.frame.minX,
+                              y: displayBounds.minY + screen.frame.maxY - sliderOnScreen.maxY,
+                              width: sliderOnScreen.width, height: sliderOnScreen.height)
+    let sliderMotion = try await probe.moveCursor(bounds: sliderBounds, duration: 10)
+    XCTAssertNotNil(controller.thumbnailPeekView.imageView.image,
+                    "The slider scenario must actually exercise the thumbnail preview")
+    let eventsAttachment = XCTAttachment(
+      data: try JSONEncoder().encode(samples.map { ["time": $0.time, "delay": $0.delay] }),
+      uniformTypeIdentifier: "public.json")
+    eventsAttachment.name = "unrecorded-cursor-event-latencies.json"
+    eventsAttachment.lifetime = .keepAlways
+    add(eventsAttachment)
+    let motionAttachment = XCTAttachment(data: try JSONEncoder().encode([videoMotion, sliderMotion]),
+                                         uniformTypeIdentifier: "public.json")
+    motionAttachment.name = "unrecorded-injected-cursor-events.json"
+    motionAttachment.lifetime = .keepAlways
+    add(motionAttachment)
+    for (name, motion) in [("video", videoMotion), ("slider", sliderMotion)] {
+      let delays = samples.filter { $0.time >= motion.start && $0.time <= motion.end }.map(\.delay).sorted()
+      XCTAssertGreaterThan(delays.count, 240, "Real events must reach the application during \(name) motion")
+      let p99 = delays.dropLast(delays.count / 100).last ?? .infinity
+      print("UNRECORDED CURSOR \(name): events=\(delays.count), p99=\(p99 * 1000) ms, max=\((delays.last ?? 0) * 1000) ms")
+      XCTAssertLessThan(p99, 1.0 / Double(screen.maximumFramesPerSecond),
+                        "Cursor events accumulated in the main event queue during \(name) motion")
+    }
+  }
+
+  @available(macOS 12.3, *)
   func testCompositedFullscreenVideoAndSystemCursor() async throws {
     let player = PlayerCore()
     player.label = "compositor-test"
@@ -337,9 +569,16 @@ final class FullscreenPerformanceTests: XCTestCase {
       clip.append(Data(repeating: 100, count: 640 * 360 / 4))
       clip.append(Data(repeating: 170, count: 640 * 360 / 4))
     }
-    try clip.write(to: url)
+    let reproductionFile = ProcessInfo.processInfo.environment["IINA_CURSOR_REPRO_FILE"] ?? ""
+    let realVideo = !reproductionFile.isEmpty
+    let playbackURL = realVideo ? URL(fileURLWithPath: reproductionFile) : url
+    if realVideo {
+      XCTAssertTrue(FileManager.default.isReadableFile(atPath: reproductionFile))
+    } else {
+      try clip.write(to: url)
+    }
     player.mpv.setString("loop-file", "inf")
-    player.openURL(url, shouldAutoLoad: false)
+    player.openURL(playbackURL, shouldAutoLoad: false)
     try await waitUntil { player.info.state == .playing }
     window.center()
     window.level = .floating
@@ -347,7 +586,8 @@ final class FullscreenPerformanceTests: XCTestCase {
     NSApp.activate(ignoringOtherApps: true)
     try await Task.sleep(nanoseconds: 700_000_000)
     let displayID = window.screen!.displayId!
-    try await recorder.start(displayID: displayID)
+    if realVideo { XCTAssertGreaterThanOrEqual(window.screen!.maximumFramesPerSecond, 120) }
+    try await recorder.start(displayID: displayID, realVideo: realVideo)
     try await Task.sleep(nanoseconds: 300_000_000)
     let entryStart = ProcessInfo.processInfo.systemUptime
     window.toggleFullScreen(nil)
@@ -363,6 +603,14 @@ final class FullscreenPerformanceTests: XCTestCase {
     referenceWindow.level = .floating
     referenceWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     referenceWindow.orderFrontRegardless()
+    if realVideo {
+      _ = try await recorder.moveCursor(bounds: CGDisplayBounds(displayID), duration: 0.2)
+      try await Task.sleep(nanoseconds: 100_000_000)
+      try await recorder.calibrateCursor()
+    }
+    // Calibrate reappearance under the same initially-hidden condition as the video phase.
+    NSCursor.setHiddenUntilMouseMoves(true)
+    try await Task.sleep(nanoseconds: 100_000_000)
     let referenceMotion = try await recorder.moveCursor(bounds: CGDisplayBounds(displayID))
     referenceWindow.orderOut(nil)
     controller.hideUIAndCursor()
@@ -386,6 +634,15 @@ final class FullscreenPerformanceTests: XCTestCase {
       for _ in 0..<240 { layer.update(force: true) }
     }
     let motion = try await recorder.moveCursor(bounds: CGDisplayBounds(displayID))
+    var additionalMotions: [CursorMotion] = []
+    if realVideo {
+      let display = CGDisplayBounds(displayID)
+      for fraction in [0.25, 0.50, 0.90] {
+        let path = CGRect(x: display.minX, y: display.minY + display.height * fraction,
+                          width: display.width, height: 0)
+        additionalMotions.append(try await recorder.moveCursor(bounds: path))
+      }
+    }
     try await redrawBurst.value
     let contextWaits = try await contextLatency.value
     let cursorStart = motion.start
@@ -403,7 +660,7 @@ final class FullscreenPerformanceTests: XCTestCase {
     phaseAttachment.name = "capture-phases.json"
     phaseAttachment.lifetime = .keepAlways
     add(phaseAttachment)
-    let motionAttachment = XCTAttachment(data: try JSONEncoder().encode(motion), uniformTypeIdentifier: "public.json")
+    let motionAttachment = XCTAttachment(data: try JSONEncoder().encode([motion] + additionalMotions), uniformTypeIdentifier: "public.json")
     motionAttachment.name = "injected-cursor-events.json"
     motionAttachment.lifetime = .keepAlways
     add(motionAttachment)
@@ -411,8 +668,8 @@ final class FullscreenPerformanceTests: XCTestCase {
     let cursor = samples.filter { $0.time >= cursorStart && $0.time <= cursorEnd }
     let reference = samples.filter { $0.time >= referenceMotion.start && $0.time <= referenceMotion.end }
     let videoHolds = CompositedFrameRecorder.changeIntervals(transition, value: { Int($0.level / 3) })
-    let cursorHolds = CompositedFrameRecorder.changeIntervals(cursor.filter { $0.cursorX != nil }, value: { $0.cursorX! })
-    let referenceHolds = CompositedFrameRecorder.changeIntervals(reference.filter { $0.cursorX != nil }, value: { $0.cursorX! })
+    let cursorHolds = CompositedFrameRecorder.cursorChangeIntervals(cursor, through: cursorEnd)
+    let referenceHolds = CompositedFrameRecorder.cursorChangeIntervals(reference, through: referenceMotion.end)
     let framePeriod = 1.0 / Double(window.screen!.maximumFramesPerSecond)
     let referenceP99 = referenceHolds.sorted().dropLast(referenceHolds.count / 100).last ?? .infinity
     let cursorP99 = cursorHolds.sorted().dropLast(cursorHolds.count / 100).last ?? .infinity
@@ -421,8 +678,12 @@ final class FullscreenPerformanceTests: XCTestCase {
     let referenceAppearance = (reference.first { $0.cursorX != nil }?.time ?? .infinity) - referenceMotion.start
     print("COMPOSITOR video max=\((videoHolds.max() ?? 0) * 1000) ms; reference cursor p99=\(referenceP99 * 1000) ms; fullscreen cursor p99=\(cursorP99 * 1000) ms; cursor max=\((cursorHolds.max() ?? 0) * 1000) ms; cursor reappearance=\(cursorAppearance * 1000) ms; GL wait p95=\(contextP95 * 1000) ms")
     XCTAssertGreaterThan(transition.count, 10, "The capture must observe the fullscreen animation")
-    XCTAssertGreaterThan(videoHolds.count, 10, "Video must continue changing throughout fullscreen entry")
-    XCTAssertLessThan(videoHolds.max() ?? .infinity, 3.0 / 60, "Composited video froze during fullscreen entry")
+    if !realVideo {
+      XCTAssertGreaterThan(videoHolds.count, 10, "Video must continue changing throughout fullscreen entry")
+      XCTAssertLessThan(videoHolds.max() ?? .infinity, 3.0 / 60, "Composited video froze during fullscreen entry")
+    }
+    XCTAssertGreaterThan(Double(cursor.filter { $0.cursorX != nil }.count) / Double(max(1, cursor.count)), 0.98,
+                         "The recording must observe the actual cursor throughout fullscreen motion")
     XCTAssertGreaterThan(cursorHolds.count, 120, "The actual system cursor must be visible and moving in captured output")
     XCTAssertGreaterThan(Double(referenceHolds.count) / (referenceMotion.end - referenceMotion.start),
                          0.8 / framePeriod, "The reference capture must resolve high-refresh cursor motion")
@@ -433,6 +694,17 @@ final class FullscreenPerformanceTests: XCTestCase {
     XCTAssertLessThan(cursorHolds.max() ?? .infinity, 1.0 / 30, "The composited system cursor stalled")
     XCTAssertLessThan(cursorAppearance, max(referenceAppearance, framePeriod) + framePeriod,
                       "The hidden system cursor must reappear promptly when movement resumes")
+    for (index, phase) in additionalMotions.enumerated() {
+      let frames = samples.filter { $0.time >= phase.start && $0.time <= phase.end }
+      let holds = CompositedFrameRecorder.cursorChangeIntervals(frames, through: phase.end)
+      let p99 = holds.sorted().dropLast(holds.count / 100).last ?? .infinity
+      print("REAL FILE CURSOR region \(index): changes=\(holds.count), p99=\(p99 * 1000) ms, max=\((holds.max() ?? .infinity) * 1000) ms")
+      XCTAssertGreaterThan(Double(holds.count), 0.8 * (phase.end - phase.start) / framePeriod)
+      XCTAssertLessThan(p99, referenceP99 + 0.5 * framePeriod)
+      XCTAssertLessThan(holds.max() ?? .infinity, (referenceHolds.max() ?? 0) + 0.5 * framePeriod)
+      XCTAssertGreaterThan(Double(frames.filter { $0.cursorX != nil }.count) / Double(max(1, frames.count)), 0.98,
+                           "Cursor detection must cover the requested region, including enlarged accessibility cursors")
+    }
     XCTAssertLessThan(contextP95, framePeriod, "The video renderer must not reserve OpenGL while waiting for a playback deadline")
   }
 }

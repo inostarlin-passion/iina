@@ -16,6 +16,42 @@ class VideoView: NSView {
   private var layerConfigured = false
   private var fullscreenDrawableSize: CGSize?
   private var pendingContentsScale: CGFloat?
+  private var cursorRefreshLink: AnyObject?
+  private var cursorRefreshDeadline: TimeInterval = 0
+
+  /// CVDisplayLink reports swaps to mpv, but does not express this window's interactive
+  /// refresh-rate demand to ProMotion. Keep the view at its display's rate while the cursor moves.
+  func noteCursorActivity() {
+    guard #available(macOS 14.0, *), let screen = window?.screen,
+          screen.maximumFramesPerSecond > 60 else { return }
+    cursorRefreshDeadline = ProcessInfo.processInfo.systemUptime + 0.5
+    let link: CADisplayLink
+    if let existing = cursorRefreshLink as? CADisplayLink {
+      link = existing
+    } else {
+      link = displayLink(target: self, selector: #selector(cursorRefreshTick(_:)))
+      cursorRefreshLink = link
+      link.add(to: .main, forMode: .common)
+    }
+    let rate = Float(screen.maximumFramesPerSecond)
+    if link.preferredFrameRateRange.preferred != rate {
+      link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+    }
+  }
+
+  func stopCursorRefresh() {
+    if #available(macOS 14.0, *) { (cursorRefreshLink as? CADisplayLink)?.invalidate() }
+    cursorRefreshLink = nil
+  }
+
+  @available(macOS 14.0, *)
+  @objc private func cursorRefreshTick(_ link: CADisplayLink) {
+    if ProcessInfo.processInfo.systemUptime >= cursorRefreshDeadline || window?.isKeyWindow != true {
+      stopCursorRefresh()
+    } else {
+      player.mainWindow.flushCursorPreview()
+    }
+  }
 
   lazy var videoLayer: ViewLayer = {
     let layer = ViewLayer(self)
@@ -98,6 +134,7 @@ class VideoView: NSView {
   /// - Important: Once mpv has been instructed to quit accessing the mpv core can result in a crash, therefore locks must be
   ///     used to coordinate uninitializing the view so that other threads do not attempt to use the mpv core while it is shutting down.
   func uninit() {
+    stopCursorRefresh()
     player.mpv.lockAndSetOpenGLContext()
     defer { player.mpv.unlockOpenGLContext() }
     $isUninited.withWriteLock() { isUninited in

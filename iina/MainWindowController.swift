@@ -491,11 +491,28 @@ class MainWindowController: PlayerWindowController {
       }
     }
 
+    // Batch the controller and moving time preview into one glass rendering group.
+    // Separate backdrop passes over full-resolution video can stall interactive updates.
+    let controlsContent: NSView
+    if #available(macOS 26.0, *) {
+      let group = PlaybackGlassContainerView()
+      group.translatesAutoresizingMaskIntoConstraints = false
+      let content = NSView()
+      content.translatesAutoresizingMaskIntoConstraints = false
+      group.contentView = content
+      cv.addSubview(group)
+      group.padding(.all)
+      content.padding(.all)
+      controlsContent = content
+    } else {
+      controlsContent = cv
+    }
+
     // create translucent views
     oscBottomView = OSCBottomView(mainWindow: self)
-    cv.addSubview(oscBottomView)
+    controlsContent.addSubview(oscBottomView)
     oscFloatingView = OSCFloatingView(mainWindow: self)
-    cv.addSubview(oscFloatingView)
+    controlsContent.addSubview(oscFloatingView)
     osdView = OSDView(mainWindow: self)
     cv.addSubview(osdView)
     additionalInfoView = AdditionalInfoView(mainWindow: self)
@@ -510,7 +527,7 @@ class MainWindowController: PlayerWindowController {
     thumbnailPeekView = ThumbnailPeekView()
     cv.addSubview(thumbnailPeekView)
     self.timePreviewView = TimePreviewView(mainWindow: self)
-    cv.addSubview(timePreviewView)
+    controlsContent.addSubview(timePreviewView)
     thumbnailPeekView.isHidden = true
     timePreviewView.isHidden = true
     timePreviewView.textField.font = .monospacedDigitFont(for: .small)
@@ -1294,10 +1311,26 @@ class MainWindowController: PlayerWindowController {
     }
   }
 
+  private var pendingCursorPreviewEvent: NSEvent?
+
+  func flushCursorPreview() {
+    guard let event = pendingCursorPreviewEvent else { return }
+    pendingCursorPreviewEvent = nil
+    refreshSeekTimeAndThumbnail(from: event)
+  }
+
   override func mouseMoved(with event: NSEvent) {
     guard !interactiveMode.isActive else { return }
 
-    refreshSeekTimeAndThumbnail(from: event)
+    if #available(macOS 14.0, *), fsState.isFullscreen,
+       (window?.screen?.maximumFramesPerSecond ?? 60) > 60 {
+      // A high-polling-rate mouse can cross hundreds of preview seconds per second in a
+      // long video. Apply only its latest position on each display tick, before layout.
+      pendingCursorPreviewEvent = event
+      videoView.noteCursorActivity()
+    } else {
+      refreshSeekTimeAndThumbnail(from: event)
+    }
     // Mouse events can arrive at the display refresh rate. Only start a fade when the UI
     // actually needs to become visible; restarting it on every event stalls its completion.
     if isMouseInWindow && animationState != .shown && animationState != .willShow {
@@ -1634,6 +1667,8 @@ class MainWindowController: PlayerWindowController {
   ///     [willExitFullScreenNotification](https://developer.apple.com/documentation/appkit/nswindow/willexitfullscreennotification).
   func windowWillExitFullScreen(_ notification: Notification) {
     log("Exiting full screen mode")
+    pendingCursorPreviewEvent = nil
+    videoView.stopCursorRefresh()
     videoView.beginFullscreenTransition()
     // When playback is paused the display link is stopped in order to avoid wasting energy on
     // needless processing. It must be running while transitioning from full screen mode.
@@ -2031,6 +2066,8 @@ class MainWindowController: PlayerWindowController {
   }
 
   func windowDidResignKey(_ notification: Notification) {
+    pendingCursorPreviewEvent = nil
+    videoView.stopCursorRefresh()
     // keyWindow is nil: The whole app is inactive
     // keyWindow is another MainWindow: Switched to another video window
     if NSApp.keyWindow == nil ||
@@ -2319,6 +2356,7 @@ class MainWindowController: PlayerWindowController {
 
   /// This will either show & position, or hide, as appropriate, `thumbnailPeekView` and/or `timePreviewView`.
   private func refreshSeekTimeAndThumbnail(from event: NSEvent) {
+    pendingCursorPreviewEvent = nil
     let isCoveredByOSD = !osdView.isHidden && event.inAnyOf([osdView])
     let isCoveredBySidebar = sidebars.isEventCoveringVisibleSidebar(event)
     if !playSlider.isHidden && event.inAnyOf([playSlider]), !isCoveredByOSD, !isCoveredBySidebar {
@@ -3048,14 +3086,19 @@ class MainWindowController: PlayerWindowController {
     let sliderFrameInWindow = playSlider.convert(playSlider.frame, to: nil)
 
     if player.info.thumbnailsReady, let image = player.info.getThumbnail(forSecond: previewTime.second)?.image {
-      thumbnailPeekView.imageView.image = image.rotate(rotation)
+      thumbnailPeekView.updateImage(image, rotation: rotation)
       thumbnailPeekView.isHidden = false
 
       // In some formats (like most of Japanese TV video formats), display aspect ratios (DAR) are different from the
       // sample aspect ratio (SAR). A typical configuration is SAR 1440x1080i (4:3) w/ DAR 1920x1080 (16:9). We use video
       // display size to consider pixel formats as well as rotation from metadata properly display the thumbnail.
-      let (videoWidth, videoHeight) = player.videoSizeForDisplay
-      let displayAspectRatio = CGFloat(videoWidth) / CGFloat(videoHeight)
+      // Mouse motion must not synchronously query mpv: decoding can hold its core lock
+      // for longer than a high-refresh display frame. Both rotations arrive via observers.
+      var videoWidth = player.info.displayWidth ?? AppData.widthWhenNoVideo
+      var videoHeight = player.info.displayHeight ?? AppData.heightWhenNoVideo
+      let netRotation = ((rotation - player.info.rotation) % 360 + 360) % 360
+      if netRotation == 90 || netRotation == 270 { swap(&videoWidth, &videoHeight) }
+      let displayAspectRatio = CGFloat(max(1, videoWidth)) / CGFloat(max(1, videoHeight))
 
       let width = CGFloat(UserDefaults.standard.integer(forKey: "thumbnailWidth"))
       let height = round(width / displayAspectRatio)
@@ -3243,5 +3286,13 @@ extension MainWindowController: PIPViewControllerDelegate {
       state.contentDuration = duration
       state.setPlaybackRate(playing ? player.info.playSpeed : 0, elapsedTime: elapsed, timeControlStatus: playing ? 2 : 0)
     }
+  }
+}
+
+@available(macOS 26.0, *)
+private class PlaybackGlassContainerView: NSGlassEffectContainerView {
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let hit = super.hitTest(point)
+    return hit === self || hit === contentView ? nil : hit
   }
 }

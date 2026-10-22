@@ -11,6 +11,16 @@ import Cocoa
 class ThumbnailPeekView: NSView {
 
   var imageView: NSImageView!
+  private weak var sourceImage: NSImage?
+  private var sourceRotation: Int?
+
+  func updateImage(_ image: NSImage, rotation: Int) {
+    let normalizedRotation = ((rotation % 360) + 360) % 360
+    guard sourceImage !== image || sourceRotation != normalizedRotation || imageView.image == nil else { return }
+    sourceImage = image
+    sourceRotation = normalizedRotation
+    imageView.image = image.rotate(normalizedRotation)
+  }
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)

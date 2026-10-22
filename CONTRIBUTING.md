@@ -55,6 +55,36 @@ panel's physical scanout.
 Raw frame measurements and phase timestamps are retained as JSON attachments in the Xcode test
 result. For a named result bundle, pass `-resultBundlePath` and a new output path to the script.
 
+The cursor suite also runs without an active recording stream: it plays 24 fps video, waits for
+auto-hide, and posts real mouse events for ten seconds over both the video and the slider. The
+slider scenario includes a rotated thumbnail preview. Event delivery latency is measured separately
+from captured cursor cadence; neither is a measurement of physical panel scanout. Missing cursor
+samples and early capture termination extend measurement to the requested phase end rather than
+silently shortening the observation period.
+
+For a real-media reproduction on a 120 Hz display, run:
+
+```sh
+IINA_CURSOR_REPRO_FILE='/absolute/path/to/video.mp4' ./other/test_fullscreen.sh \
+  -resultBundlePath build/fullscreen-real-media.xcresult
+```
+
+A supplied path must exist; the tests use that file instead of substituting the synthetic clip.
+Real-media cursor capture calibrates the current system pointer on the gray reference, including
+accessibility pointer scaling, then checks motion over upper, middle and lower regions. The synthetic
+clip still provides the separate video marker assertions for fullscreen entry. The unrecorded real-media
+scenario keeps the video's normal orientation; the synthetic scenario also exercises rotated previews.
+The view-bound display link requests the screen's maximum refresh rate only during fullscreen pointer
+activity and releases the request after half a second without movement. Glass controller and preview
+surfaces share a container to reduce backdrop rendering passes. High-polling-rate hover events are
+coalesced to the latest position on each display tick, so long-media timestamps do not trigger
+hundreds of glass/text layout updates per second. Real-media runs retain thumbnail generation and
+use thumbnails from the supplied file.
+
+References: [AppKit display links](https://developer.apple.com/documentation/appkit/nsview/displaylink(target:selector:)),
+[preferred frame-rate range](https://developer.apple.com/documentation/quartzcore/cadisplaylink/preferredframeraterange),
+and [glass rendering groups](https://developer.apple.com/documentation/appkit/nsglasseffectcontainerview).
+
 ## Localizations
 
 We use [Crowdin](https://crowdin.com/project/iina) for localization.

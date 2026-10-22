@@ -9,10 +9,11 @@ probe_dir=$(mktemp -d /tmp/iina-compositor-probe.XXXXXX)
 probe_pid=$!
 cleanup() {
   kill "$probe_pid" 2>/dev/null || true
+  wait "$probe_pid" 2>/dev/null || true
   rm -r "$probe_dir"
 }
 trap cleanup EXIT
-TEST_RUNNER_IINA_COMPOSITOR_PROBE_DIR="$probe_dir" xcodebuild test \
+TEST_RUNNER_IINA_CURSOR_REPRO_FILE="${IINA_CURSOR_REPRO_FILE:-}" TEST_RUNNER_IINA_COMPOSITOR_PROBE_DIR="$probe_dir" xcodebuild test \
   -project iina.xcodeproj -scheme iina -configuration Debug -derivedDataPath build \
   -destination 'platform=macOS' ONLY_ACTIVE_ARCH=YES \
   CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= "$@"
