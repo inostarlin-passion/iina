@@ -382,6 +382,7 @@
 		E3FC31461FE1501E00B9B86F /* PowerSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FC31451FE1501E00B9B86F /* PowerSource.swift */; };
 		E3FEC1332A30400F00CFD845 /* PluginInputManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FEC1322A30400F00CFD845 /* PluginInputManager.swift */; };
 		E3FF5AC02938582F0019CE45 /* JavascriptDevTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FF5ABF2938582F0019CE45 /* JavascriptDevTool.swift */; };
+		F51100000000000000000001 = {isa = PBXBuildFile; fileRef = F51100000000000000000002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -406,6 +407,7 @@
 			remoteGlobalIDString = E38558862A484A2D0083772D;
 			remoteInfo = "iina-plugin";
 		};
+		F51100000000000000000004 = {isa = PBXContainerItemProxy; containerPortal = 84EB1ECE1D2F51D3004FA5A1; proxyType = 1; remoteGlobalIDString = 84EB1ED51D2F51D3004FA5A1; remoteInfo = iina; };
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -1819,6 +1821,8 @@
 		FB011A0421F8C04200477551 /* hi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = hi; path = hi.lproj/Localizable.strings; sourceTree = "<group>"; };
 		FB011A0621F8C04200477551 /* hi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = hi; path = hi.lproj/FilterPresets.strings; sourceTree = "<group>"; };
 		FB011A0721F8C04200477551 /* hi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = hi; path = hi.lproj/KeyBinding.strings; sourceTree = "<group>"; };
+		F51100000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tests/fullscreen/IINAFullscreenTests.swift; sourceTree = SOURCE_ROOT; };
+		F51100000000000000000003 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = IINAFullscreenTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1903,6 +1907,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F51100000000000000000007 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -2372,6 +2377,7 @@
 		84EB1ECD1D2F51D3004FA5A1 = {
 			isa = PBXGroup;
 			children = (
+				F51100000000000000000002,
 				496498872919E47900CD61A5 /* Configs */,
 				84EB1ED81D2F51D3004FA5A1 /* iina */,
 				E3DE8DCB1FD8166A0021921C /* iina-cli */,
@@ -2389,6 +2395,7 @@
 		84EB1ED71D2F51D3004FA5A1 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				F51100000000000000000003,
 				84EB1ED61D2F51D3004FA5A1 /* IINA.app */,
 				E3DE8DCA1FD8166A0021921C /* iina-cli */,
 				49542973216C34950058F680 /* OpenInIINA.appex */,
@@ -2681,6 +2688,17 @@
 			productReference = E3DE8DCA1FD8166A0021921C /* iina-cli */;
 			productType = "com.apple.product-type.tool";
 		};
+		F51100000000000000000008 /* IINAFullscreenTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F51100000000000000000009;
+			buildPhases = (F51100000000000000000006, F51100000000000000000007,);
+			buildRules = ();
+			dependencies = (F51100000000000000000005,);
+			name = IINAFullscreenTests;
+			productName = IINAFullscreenTests;
+			productReference = F51100000000000000000003;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -2763,6 +2781,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				F51100000000000000000008 /* IINAFullscreenTests */,
 				84EB1ED51D2F51D3004FA5A1 /* iina */,
 				E3DE8DC91FD8166A0021921C /* iina-cli */,
 				E38558862A484A2D0083772D /* iina-plugin */,
@@ -3145,6 +3164,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F51100000000000000000006 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (F51100000000000000000001,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -3163,6 +3183,7 @@
 			target = E38558862A484A2D0083772D /* iina-plugin */;
 			targetProxy = 5180D7782C17DB0D00CC9C1C /* PBXContainerItemProxy */;
 		};
+		F51100000000000000000005 = {isa = PBXTargetDependency; target = 84EB1ED51D2F51D3004FA5A1; targetProxy = F51100000000000000000004; };
 /* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
@@ -4725,6 +4746,66 @@
 			};
 			name = Release;
 		};
+		F5110000000000000000000A = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ENTITLEMENTS = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/deps/include";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.colliderli.iina.fullscreen-tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/IINA.app/Contents/MacOS/IINA";
+			};
+			name = Debug;
+		};
+		F5110000000000000000000B = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ENTITLEMENTS = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/deps/include";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.colliderli.iina.fullscreen-tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/IINA.app/Contents/MacOS/IINA";
+			};
+			name = Release;
+		};
+		F5110000000000000000000C = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ENTITLEMENTS = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/deps/include";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.colliderli.iina.fullscreen-tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/IINA.app/Contents/MacOS/IINA";
+			};
+			name = Beta;
+		};
+		F5110000000000000000000D = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ENTITLEMENTS = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/deps/include";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.colliderli.iina.fullscreen-tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/IINA.app/Contents/MacOS/IINA";
+			};
+			name = Nightly;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -4783,6 +4864,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		F51100000000000000000009 = {isa = XCConfigurationList; buildConfigurations = (F5110000000000000000000A, F5110000000000000000000B, F5110000000000000000000C, F5110000000000000000000D,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */

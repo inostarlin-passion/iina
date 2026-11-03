@@ -1298,7 +1298,9 @@ class MainWindowController: PlayerWindowController {
     guard !interactiveMode.isActive else { return }
 
     refreshSeekTimeAndThumbnail(from: event)
-    if isMouseInWindow {
+    // Mouse movement only needs to reveal hidden UI or reverse a fade-out. Repeatedly
+    // restarting the fade-in submits unnecessary animation transactions at mouse frequency.
+    if isMouseInWindow && (animationState == .hidden || animationState == .willHide) {
       showUI()
     }
     // check whether mouse is in osc
