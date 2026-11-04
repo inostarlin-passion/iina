@@ -12,6 +12,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--integration', action='store_true', help='Run real IINA fullscreen and screen-cursor tests')
 parser.add_argument('--only-testing', action='append', default=[], help='Select a hosted XCTest method')
 args = parser.parse_args()
+subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name('test_hosted_driver.py'))], check=True)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BUILD = ROOT / 'build/fullscreen-regression'
@@ -59,8 +60,18 @@ for label, passed in checks.items():
     print(f'{"PASS" if passed else "FAIL"} {label}', flush=True)
 
 bridge = BUILD / 'bridge.h'
-bridge.write_text('#include <mpv/render_gl.h>\n')
+bridge.write_text('#include <mpv/render_gl.h>\nint iina_test_render_calls(void);\n')
 sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
+subprocess.run(['xcrun', '--sdk', 'macosx', 'clang',
+                str(ROOT / 'tests/fullscreen/LegacyFramebufferCheck.c'), '-framework', 'OpenGL',
+                '-o', str(BUILD / 'legacy-fbo-check')], check=True)
+legacy = subprocess.run([str(BUILD / 'legacy-fbo-check')], timeout=10)
+if legacy.returncode not in (0, 2):
+    sys.exit(legacy.returncode)
+subprocess.run(['xcrun', '--sdk', 'macosx', 'clang', '-Wno-deprecated-declarations',
+                '-I', str(ROOT / 'deps/include'), '-c',
+                str(ROOT / 'tests/fullscreen/MPVRenderStub.c'),
+                '-o', str(BUILD / 'render-stub.o')], check=True)
 command = ['xcrun', 'swiftc', '-swift-version', '5', '-sdk', sdk,
            '-import-objc-header', str(bridge), '-I', str(ROOT / 'deps/include'),
            '-framework', 'Cocoa', '-framework', 'OpenGL',
@@ -68,7 +79,8 @@ command = ['xcrun', 'swiftc', '-swift-version', '5', '-sdk', sdk,
            str(ROOT / 'tests/fullscreen/Dependencies.swift'),
            *[str(ROOT / 'iina' / name) for name in ['Lock.swift', 'Atomic.swift',
              'ReadWriteLock.swift', 'ReadWriteAtomic.swift', 'ViewLayer.swift']],
-           str(ROOT / 'tests/fullscreen/main.swift'), str(ROOT / 'deps/lib/libmpv.2.dylib'),
+           str(ROOT / 'tests/fullscreen/main.swift'), str(BUILD / 'render-stub.o'),
+           str(ROOT / 'deps/lib/libmpv.2.dylib'),
            '-Xlinker', '-rpath', '-Xlinker', str(ROOT / 'deps/lib'),
            '-o', str(BUILD / 'regression-tests')]
 subprocess.run(command, cwd=ROOT, check=True, stdout=(BUILD / 'compile.log').open('w'),

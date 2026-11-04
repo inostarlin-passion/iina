@@ -10,6 +10,7 @@ def run(root: pathlib.Path, result_path: pathlib.Path, only_testing=()):
     build = root / 'build'
     output = build / 'fullscreen-regression'
     output.mkdir(parents=True, exist_ok=True)
+    (output / 'hosted.log').write_text('This run has not reached test execution. See hosted-build.log for build status.\n')
     base = ['xcodebuild', '-project', str(root / 'iina.xcodeproj'),
             '-scheme', 'IINAFullscreenRegression', '-configuration', 'Debug',
             '-destination', 'platform=macOS', '-derivedDataPath', str(build),
@@ -22,6 +23,7 @@ def run(root: pathlib.Path, result_path: pathlib.Path, only_testing=()):
         compiled = subprocess.run(base + ['build-for-testing'], cwd=root,
                                   stdout=log, stderr=subprocess.STDOUT, timeout=300)
     if compiled.returncode:
+        print(f'Hosted build failed; no tests executed. Log: {output / "hosted-build.log"}')
         return compiled.returncode
     original = build / 'Build/Products/Debug/IINA.app'
     host = output / 'IINARegression.app'
@@ -71,7 +73,7 @@ def run(root: pathlib.Path, result_path: pathlib.Path, only_testing=()):
     summary = json.loads(subprocess.check_output([
         'xcrun', 'xcresulttool', 'get', 'test-results', 'summary',
         '--path', str(result_path), '--format', 'json'], text=True))
-    expected = len(only_testing) if only_testing else 8
+    expected = len(only_testing) if only_testing else 12
     if (summary.get('totalTestCount', 0) < expected or summary.get('skippedTests', 0)
             or summary.get('failedTests', 0)):
         print(f'Incomplete hosted test run: {summary.get("totalTestCount")} tests; '

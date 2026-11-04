@@ -1,5 +1,6 @@
 import Cocoa
 import CoreVideo
+import OpenGL.GL
 import XCTest
 @testable import IINA
 
@@ -227,10 +228,11 @@ final class IINAFullscreenTests: XCTestCase {
       .deletingLastPathComponent().appendingPathComponent("build/fullscreen-cursor-probe")
   }
 
-  private func cursorProbeMeasurement(_ label: String, mode: String = "capture") throws -> [String: Any] {
-    let screen = try XCTUnwrap(player.mainWindow.window?.screen)
+  private func cursorProbeMeasurement(_ label: String, mode: String = "capture",
+                                      window suppliedWindow: NSWindow? = nil) throws -> [String: Any] {
+    let window = try XCTUnwrap(suppliedWindow ?? player.mainWindow.window)
+    let screen = try XCTUnwrap(window.screen)
     let displayID = try XCTUnwrap(screen.displayId)
-    let window = try XCTUnwrap(player.mainWindow.window)
     let center = window.convertPoint(toScreen: NSPoint(x: window.contentLayoutRect.midX,
                                                        y: window.contentLayoutRect.midY))
     window.orderFrontRegardless()
@@ -343,6 +345,77 @@ final class IINAFullscreenTests: XCTestCase {
     }
   }
 
+  func testH8PlainAppKitWindowCaptureControl() throws { try captureControl(mode: 0) }
+  func testH9MainThreadOpenGLControl() throws { try captureControl(mode: 1) }
+  func testH10BackgroundOpenGLControl() throws { try captureControl(mode: 2) }
+  func testH11ProductionContextOpenGLControl() throws { try captureControl(mode: 3) }
+
+  private func captureControl(mode: Int) throws {
+    guard FileManager.default.fileExists(atPath: cursorProbeDirectory.appendingPathComponent("available.json").path)
+    else { throw XCTSkip("Start the independent cursor probe with --integration") }
+    player.pause()
+    try waitUntil("paused control player") { self.player.info.state == .paused }
+    player.mainWindow.window?.orderOut(nil)
+    pump(6.5)
+    let window = NSWindow(contentRect: NSRect(x: 300, y: 300, width: 800, height: 450),
+                          styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.collectionBehavior = [.fullScreenPrimary]
+    window.title = "Cursor capture control \(mode)"
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 450))
+    let glLayer: CursorControlGLLayer?
+    if mode > 0 {
+      let reference = mode == 3 ? ViewLayer(player.mainWindow.videoView) : nil
+      glLayer = CursorControlGLLayer(reference: reference, background: mode > 1)
+      glLayer!.frame = view.bounds
+      glLayer!.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+      if let reference {
+        glLayer!.contentsFormat = reference.contentsFormat
+        glLayer!.colorspace = player.mainWindow.videoView.videoLayer.colorspace
+      }
+      view.layer = glLayer
+    } else { glLayer = nil }
+    view.wantsLayer = true
+    window.contentView = view
+    var tick = 0
+    let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { _ in
+      if let glLayer { glLayer.update(phase: tick) }
+      else {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.layer?.backgroundColor = NSColor(deviceRed: 0.9,
+          green: 0.2 + CGFloat(tick % 100) / 250, blue: 0.1, alpha: 1).cgColor
+        CATransaction.commit()
+      }
+      tick += 1
+    }
+    RunLoop.main.add(timer, forMode: .common)
+    defer { timer.invalidate(); window.orderOut(nil); window.close() }
+    window.makeKeyAndOrderFront(nil)
+    pump(0.4)
+    for stage in 0..<3 {
+      if stage > 0 {
+        var entered = false
+        let observer = NotificationCenter.default.addObserver(forName: NSWindow.didEnterFullScreenNotification,
+                                                               object: window, queue: .main) { _ in entered = true }
+        window.toggleFullScreen(nil)
+        defer { NotificationCenter.default.removeObserver(observer) }
+        try waitUntil("plain control fullscreen") { entered }
+        pump(0.4)
+      }
+      let sample = try cursorProbeMeasurement("control-\(mode)/\(stage)", window: window)
+      print("CAPTURE_CONTROL mode=\(mode) stage=\(stage) color_ticks=\(tick) sample=\(sample)")
+      if stage > 0 {
+        var exited = false
+        let observer = NotificationCenter.default.addObserver(forName: NSWindow.didExitFullScreenNotification,
+                                                               object: window, queue: .main) { _ in exited = true }
+        window.toggleFullScreen(nil)
+        defer { NotificationCenter.default.removeObserver(observer) }
+        try waitUntil("plain control exit fullscreen") { exited }
+      }
+    }
+  }
+
   func testH5MouseResponseDuringRealPlayback() throws {
     try measureMouse("windowed")
     try enterFullscreen(legacy: false)
@@ -351,5 +424,57 @@ final class IINAFullscreenTests: XCTestCase {
     try waitUntil("exit native fullscreen") { self.player.mainWindow.fsState == .windowed }
     try enterFullscreen(legacy: true)
     try measureMouse("legacy-fullscreen")
+  }
+}
+
+// Rendering controls isolate CAOpenGLLayer, its caller queue, and IINA's actual context format.
+private final class CursorControlGLLayer: CAOpenGLLayer {
+  private let reference: ViewLayer?
+  private let background: Bool
+  private let queue = DispatchQueue(label: "iina.tests.gl-control", qos: .userInteractive)
+  @Atomic private var phase = 0
+  init(reference: ViewLayer?, background: Bool) {
+    self.reference = reference
+    self.background = background
+    super.init()
+    isAsynchronous = false
+  }
+  override init(layer: Any) {
+    let old = layer as! CursorControlGLLayer
+    reference = old.reference
+    background = old.background
+    super.init(layer: layer)
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used by the rendering control") }
+  override func copyCGLPixelFormat(forDisplayMask mask: UInt32) -> CGLPixelFormatObj {
+    guard let reference else { return super.copyCGLPixelFormat(forDisplayMask: mask) }
+    let format = reference.copyCGLPixelFormat(forDisplayMask: mask)
+    CGLRetainPixelFormat(format)
+    return format
+  }
+  override func copyCGLContext(forPixelFormat format: CGLPixelFormatObj) -> CGLContextObj {
+    guard let reference else { return super.copyCGLContext(forPixelFormat: format) }
+    let context = reference.copyCGLContext(forPixelFormat: format)
+    CGLRetainContext(context)
+    return context
+  }
+  func update(phase: Int) {
+    let work = { [self] in
+      self.phase = phase
+      CATransaction.begin()
+      CATransaction.setDisableActions(true)
+      display()
+      CATransaction.commit()
+      CATransaction.flush()
+    }
+    if background { queue.async(execute: work) } else { work() }
+  }
+  override func canDraw(inCGLContext ctx: CGLContextObj, pixelFormat pf: CGLPixelFormatObj,
+                        forLayerTime t: CFTimeInterval, displayTime ts: UnsafePointer<CVTimeStamp>?) -> Bool { true }
+  override func draw(inCGLContext ctx: CGLContextObj, pixelFormat pf: CGLPixelFormatObj,
+                     forLayerTime t: CFTimeInterval, displayTime ts: UnsafePointer<CVTimeStamp>?) {
+    glClearColor(0.9, 0.2 + Float(phase % 100) / 250, 0.1, 1)
+    glClear(GLbitfield(GL_COLOR_BUFFER_BIT))
+    glFlush()
   }
 }

@@ -1,5 +1,6 @@
 import Cocoa
 import OpenGL.GL
+import OpenGL.GL3
 
 var failures = 0
 func check(_ condition: Bool, _ message: String) {
@@ -109,5 +110,47 @@ do {
   flush(layer)
   check(view.isUninited, "D5 forced update after shutdown returns safely")
 }
+// D6: The mpv boundary resets GL state; the layer must return the caller's exact bindings.
+do {
+  let layer = ViewLayer(view)
+  let ctx: CGLContextObj = field(layer, "cglContext")
+  let pf: CGLPixelFormatObj = field(layer, "cglPixelFormat")
+  CGLSetCurrentContext(ctx)
+  var textures = [GLuint](repeating: 0, count: 2)
+  var framebuffers = [GLuint](repeating: 0, count: 2)
+  glGenTextures(2, &textures)
+  glGenFramebuffers(2, &framebuffers)
+  for index in 0..<2 {
+    glBindTexture(GLenum(GL_TEXTURE_2D), textures[index])
+    glTexImage2D(GLenum(GL_TEXTURE_2D), 0, GL_RGBA8, 16, 16, 0,
+                 GLenum(GL_RGBA), GLenum(GL_UNSIGNED_BYTE), nil)
+    glBindFramebuffer(GLenum(GL_FRAMEBUFFER), framebuffers[index])
+    glFramebufferTexture2D(GLenum(GL_FRAMEBUFFER), GLenum(GL_COLOR_ATTACHMENT0),
+                           GLenum(GL_TEXTURE_2D), textures[index], 0)
+    check(glCheckFramebufferStatus(GLenum(GL_FRAMEBUFFER)) == GLenum(GL_FRAMEBUFFER_COMPLETE),
+          "D6 fixture framebuffer \(index) complete")
+  }
+  glBindTexture(GLenum(GL_TEXTURE_2D), 0)
+  glBindFramebuffer(GLenum(GL_DRAW_FRAMEBUFFER), framebuffers[0])
+  glBindFramebuffer(GLenum(GL_READ_FRAMEBUFFER), framebuffers[1])
+  glViewport(0, 0, 16, 16)
+  view.isUninited = false
+  view.player.mpv.mpvRenderContext = OpaquePointer(bitPattern: 1)
+  let before = iina_test_render_calls()
+  layer.draw(inCGLContext: ctx, pixelFormat: pf, forLayerTime: 0, displayTime: nil)
+  check(iina_test_render_calls() == before + 1, "D6 mpv boundary substitute invoked")
+  var draw: GLint = 0
+  var read: GLint = 0
+  glGetIntegerv(GLenum(GL_DRAW_FRAMEBUFFER_BINDING), &draw)
+  glGetIntegerv(GLenum(GL_READ_FRAMEBUFFER_BINDING), &read)
+  check(draw == GLint(framebuffers[0]), "D6 draw framebuffer restored: \(draw) == \(framebuffers[0])")
+  check(read == GLint(framebuffers[1]), "D6 read framebuffer restored: \(read) == \(framebuffers[1])")
+  view.player.mpv.mpvRenderContext = nil
+  view.isUninited = true
+  glBindFramebuffer(GLenum(GL_FRAMEBUFFER), 0)
+  glDeleteFramebuffers(2, &framebuffers)
+  glDeleteTextures(2, &textures)
+}
+
 print("Dynamic test failures: \(failures)")
 exit(failures == 0 ? 0 : 1)

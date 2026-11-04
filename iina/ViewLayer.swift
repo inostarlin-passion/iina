@@ -188,6 +188,14 @@ class ViewLayer: CAOpenGLLayer {
 
       var i: GLint = 0
       glGetIntegerv(GLenum(GL_DRAW_FRAMEBUFFER_BINDING), &i)
+      var readFramebuffer: GLint = 0
+      glGetIntegerv(GLenum(GL_READ_FRAMEBUFFER_BINDING), &readFramebuffer)
+      // mpv resets framebuffer bindings to OpenGL defaults. Return the context to
+      // Core Animation with its rendering destinations intact.
+      defer {
+        glBindFramebuffer(GLenum(GL_DRAW_FRAMEBUFFER), GLuint(i))
+        glBindFramebuffer(GLenum(GL_READ_FRAMEBUFFER), GLuint(readFramebuffer))
+      }
       var dims: [GLint] = [0, 0, 0, 0]
       glGetIntegerv(GLenum(GL_VIEWPORT), &dims);
 
