@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the current hosted probes against an isolated original git revision.
 
-The baseline is expected to fail H1. This never rewrites the working checkout.
+This never rewrites the working checkout.
 """
 import argparse
 import pathlib
@@ -13,12 +13,11 @@ from hosted_driver import run as run_hosted
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('revision', help='Original revision to measure, for example e8176f27')
+parser.add_argument('--only-testing', action='append', default=[], help='Select a hosted XCTest method')
 args = parser.parse_args()
 root = pathlib.Path(__file__).resolve().parents[2]
 revision = subprocess.check_output(['git', 'rev-parse', '--verify', args.revision], cwd=root, text=True).strip()
-baseline = root / 'build' / ('fullscreen-original-' + revision[:12])
-if baseline.exists():
-    raise SystemExit(f'Baseline directory already exists: {baseline}; keep its results or remove it explicitly')
+baseline = root / 'build' / ('fullscreen-original-' + revision[:12] + '-' + time.strftime('%Y%m%d-%H%M%S'))
 baseline.mkdir(parents=True)
 archive = baseline / 'source.tar'
 with archive.open('wb') as output:
@@ -46,7 +45,7 @@ with (baseline / 'build/cursor-capture.log').open('w') as output:
             if helper.poll() is not None or time.monotonic() > deadline:
                 raise RuntimeError('Baseline cursor sampler did not start')
             time.sleep(0.05)
-        status = run_hosted(baseline, baseline / 'build/original.xcresult', [
+        status = run_hosted(baseline, baseline / 'build/original.xcresult', args.only_testing or [
             'IINAFullscreenTests/IINAFullscreenTests/testH1VisibleUIIsIdempotentDuringMouseBurst',
             'IINAFullscreenTests/IINAFullscreenTests/testH5MouseResponseDuringRealPlayback',
             'IINAFullscreenTests/IINAFullscreenTests/testH6SystemCursorPresentationCadence'])

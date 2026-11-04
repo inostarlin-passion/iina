@@ -267,7 +267,6 @@ final class IINAFullscreenTests: XCTestCase {
       try XCTUnwrap(player.mainWindow.videoView.link))
     let nominal = Double(time.timeScale) / Double(time.timeValue)
     XCTAssertGreaterThanOrEqual(nominal, 45)
-    var inconclusive: [String] = []
     for fps in [24, 30, 60] {
       let original = fixtureDirectory.appendingPathComponent("motion.y4m")
       var data = try Data(contentsOf: original)
@@ -281,34 +280,28 @@ final class IINAFullscreenTests: XCTestCase {
       player.mpv.setString("loop-file", "inf")
       XCTAssertEqual(player.mpv.getDouble("container-fps"), Double(fps), accuracy: 0.01)
       pump(0.3)
-      func assess(_ label: String) throws -> Double? {
-        let sample = try cursorProbeMeasurement(label)
-        let span = try XCTUnwrap(sample["span"] as? Double)
-        let frames = try XCTUnwrap(sample["frames"] as? Int)
+      func assess(_ stage: String) throws -> Double {
+        let label = "\(fps)fps/\(stage)"
+        let sample = try cursorProbeMeasurement(label, mode: "cadence")
         let inputRate = try XCTUnwrap(sample["postedPerSecond"] as? Double)
-        let captureRate = Double(frames - 1) / span
-        guard captureRate >= nominal * 0.8, inputRate >= 108 else {
-          inconclusive.append("\(label): capture=\(captureRate)Hz input=\(inputRate)Hz")
-          return nil
-        }
         let rate = try XCTUnwrap(sample["changesPerSecond"] as? Double)
-        XCTAssertGreaterThanOrEqual(rate, nominal * 0.8)
+        XCTAssertGreaterThanOrEqual(inputRate, 216, "\(label): insufficient input")
+        XCTAssertGreaterThanOrEqual(rate, nominal * 0.8, "\(label): cursor changes in composed screen output")
         return rate
       }
-      let windowed = try assess("\(fps)fps/windowed")
+      let windowed = try assess("windowed")
       try enterFullscreen(legacy: false)
-      let native = try assess("\(fps)fps/native-fullscreen")
-      if let native, let windowed { XCTAssertGreaterThanOrEqual(native, windowed * 0.8) }
+      let native = try assess("native-fullscreen")
       player.mainWindow.toggleWindowFullScreen()
       try waitUntil("exit native fullscreen") { self.player.mainWindow.fsState == .windowed }
+      let recovered = try assess("windowed-after-native")
+      XCTAssertGreaterThanOrEqual(native, min(windowed, recovered) * 0.8,
+                                  "\(fps)fps: native fullscreen versus surrounding windowed samples")
       try enterFullscreen(legacy: true)
-      let legacy = try assess("\(fps)fps/legacy-fullscreen")
-      if let legacy, let windowed { XCTAssertGreaterThanOrEqual(legacy, windowed * 0.8) }
+      let legacy = try assess("legacy-fullscreen")
+      XCTAssertGreaterThanOrEqual(legacy, recovered * 0.8)
       player.mainWindow.toggleWindowFullScreen()
       try waitUntil("exit legacy fullscreen") { self.player.mainWindow.fsState == .windowed }
-    }
-    if !inconclusive.isEmpty {
-      throw XCTSkip("Screen capture is undersampled; hardware cursor FPS remains unverified: " + inconclusive.joined(separator: "; "))
     }
   }
 

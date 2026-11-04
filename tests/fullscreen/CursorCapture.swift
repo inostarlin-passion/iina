@@ -235,11 +235,15 @@ private struct CursorCapture {
     let timer = DispatchSource.makeTimerSource(queue: inputQueue)
     var posted: [Double] = []
     var step = 0 // Only used by this serial timer.
-    timer.schedule(deadline: .now(), repeating: 1.0 / 120)
+    // Presentation sampling needs multiple input positions per capture period.
+    // Keep the sweep speed and range the same as in the input-delivery probe.
+    let inputRate = request.mode == "cadence" ? 240 : 120
+    timer.schedule(deadline: .now(), repeating: 1.0 / Double(inputRate))
     timer.setEventHandler {
       posted.append(ProcessInfo.processInfo.systemUptime)
-      let phase = step % 120
-      let x = request.centerX - 120 + Double(phase < 60 ? phase : 120 - phase) * 4
+      let phase = step % inputRate
+      let distance = min(phase, inputRate - phase)
+      let x = request.centerX - 120 + Double(distance) * 480 / Double(inputRate)
       CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
               mouseCursorPosition: CGPoint(x: x, y: request.centerY), mouseButton: .left)?.post(tap: .cghidEventTap)
       step += 1
